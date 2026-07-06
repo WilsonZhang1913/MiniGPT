@@ -1,0 +1,31 @@
+tokenizer: gpt2
+
+model:
+  vocab_size: 50257
+  block_size: 512
+  n_layer: 12
+  n_head: 12
+  n_embd: 768
+  dropout: 0.1
+
+data:
+  dataset_name: databricks/databricks-dolly-15k
+  split: train
+  block_size: 512
+  limit: 15000
+
+train:
+  output_dir: gs://YOUR_BUCKET/checkpoints/sft
+  batch_size: 8
+  grad_accum_steps: 4
+  learning_rate: 0.00005
+  weight_decay: 0.05
+  warmup_steps: 100
+  max_steps: 2000
+  eval_interval: 100
+  save_interval: 250
+  eval_iters: 20
+  val_fraction: 0.05
+  mixed_precision: true
+  grad_clip: 1.0
+

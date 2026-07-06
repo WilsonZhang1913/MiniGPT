@@ -1,0 +1,13 @@
+project: YOUR_PROJECT_ID
+region: us-central1
+bucket: YOUR_BUCKET
+artifact_registry_repo: minigpt
+image_uri: us-central1-docker.pkg.dev/YOUR_PROJECT_ID/minigpt/trainer:latest
+service_account: minigpt-trainer@YOUR_PROJECT_ID.iam.gserviceaccount.com
+
+vertex:
+  machine_type: n1-standard-8
+  accelerator_type: NVIDIA_TESLA_T4
+  accelerator_count: 1
+  replica_count: 1
+

@@ -1,0 +1,36 @@
+tokenizer: gpt2
+
+model:
+  vocab_size: 50257
+  block_size: 512
+  n_layer: 12
+  n_head: 12
+  n_embd: 768
+  dropout: 0.1
+
+data:
+  dataset_name: wikimedia/wikipedia
+  dataset_config: 20231101.en
+  split: train
+  streaming: true
+  text_field: text
+  block_size: 512
+  min_chars: 128
+  limit: 200000
+  tokenized_path: gs://YOUR_BUCKET/datasets/pretrain/wiki_blocks.pt
+
+train:
+  output_dir: gs://YOUR_BUCKET/checkpoints/pretrain
+  batch_size: 8
+  grad_accum_steps: 8
+  learning_rate: 0.0003
+  weight_decay: 0.1
+  warmup_steps: 1000
+  max_steps: 50000
+  eval_interval: 500
+  save_interval: 1000
+  eval_iters: 25
+  val_fraction: 0.02
+  mixed_precision: true
+  grad_clip: 1.0
+

@@ -1,0 +1,32 @@
+tokenizer: gpt2
+
+model:
+  vocab_size: 50257
+  block_size: 64
+  n_layer: 2
+  n_head: 2
+  n_embd: 128
+  dropout: 0.1
+
+data:
+  dataset_name:
+  split: train
+  block_size: 64
+  min_chars: 8
+  limit: 128
+
+train:
+  output_dir: outputs/debug
+  batch_size: 2
+  grad_accum_steps: 1
+  learning_rate: 0.0005
+  weight_decay: 0.1
+  warmup_steps: 5
+  max_steps: 10
+  eval_interval: 5
+  save_interval: 5
+  eval_iters: 2
+  val_fraction: 0.25
+  mixed_precision: false
+  grad_clip: 1.0
+
