@@ -52,6 +52,16 @@ def upload_if_gcs(local_path: str, dest_path: str) -> None:
     client.bucket(bucket_name).blob(blob_name).upload_from_filename(local_path)
 
 
+def exists_path(path: str) -> bool:
+    if not is_gcs_path(path):
+        return Path(path).exists()
+    from google.cloud import storage
+
+    bucket_name, blob_name = split_gcs_uri(path)
+    client = storage.Client()
+    return client.bucket(bucket_name).blob(blob_name).exists()
+
+
 def torch_load(path: str, map_location: str | torch.device = "cpu") -> Any:
     return torch.load(download_if_gcs(path), map_location=map_location)
 

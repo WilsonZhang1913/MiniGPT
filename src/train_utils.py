@@ -146,7 +146,7 @@ def train_loop(
             scaler.update()
             optimizer.zero_grad(set_to_none=True)
             step += 1
-            micro_step = 0
+            micro_step = 0 
             pbar.update(1)
             pbar.set_postfix(loss=f"{running_loss:.4f}", lr=f"{lr:.2e}")
             running_loss = 0.0

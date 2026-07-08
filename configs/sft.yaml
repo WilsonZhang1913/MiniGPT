@@ -19,7 +19,7 @@ data:
   limit: 15000
 
 train:
-  output_dir: gs://YOUR_BUCKET/checkpoints/sft
+  output_dir: gs://minigpt-wzhang-2026/checkpoints/sft
   batch_size: 8
   grad_accum_steps: 4
   learning_rate: 0.00005

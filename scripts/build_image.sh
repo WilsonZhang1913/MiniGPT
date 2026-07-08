@@ -12,6 +12,5 @@ with open(sys.argv[1], "r", encoding="utf-8") as f:
 PY
 )"
 
-docker build -t "$IMAGE_URI" .
+docker build --platform linux/amd64 -t "$IMAGE_URI" .
 docker push "$IMAGE_URI"
-

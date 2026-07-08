@@ -10,7 +10,7 @@ import torch
 from torch.utils.data import Dataset
 from tqdm import tqdm
 
-from .io import load_yaml, torch_load, torch_save
+from .io import exists_path, load_yaml, torch_load, torch_save
 from .tokenizer import load_tokenizer
 
 
@@ -170,9 +170,13 @@ def prepare_pretrain(config_path: str) -> None:
 def load_pretrain_dataset(config: dict) -> TokenBlockDataset:
     data_cfg = config["data"]
     tokenized_path = data_cfg.get("tokenized_path")
-    if tokenized_path and Path(tokenized_path).exists() or (isinstance(tokenized_path, str) and tokenized_path.startswith("gs://")):
+    if tokenized_path and exists_path(tokenized_path):
+        print(f"loading tokenized pretraining blocks from {tokenized_path}")
         return TokenBlockDataset(torch_load(tokenized_path)["blocks"])
     blocks = tokenize_blocks(iter_texts(data_cfg), config.get("tokenizer", "gpt2"), int(data_cfg["block_size"]) + 1)
+    if tokenized_path:
+        print(f"saving tokenized pretraining blocks to {tokenized_path}")
+        torch_save({"blocks": blocks}, tokenized_path)
     return TokenBlockDataset(blocks)
 
 
