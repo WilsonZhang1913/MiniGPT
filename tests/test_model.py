@@ -1,6 +1,7 @@
 import torch
 
 from src.model import GPT, GPTConfig
+from src.train_utils import make_optimizer, save_checkpoint, train_loop
 
 
 def test_model_forward_backward():
@@ -43,3 +44,53 @@ def test_moe_routes_to_multiple_experts():
         for expert in model.transformer["h"][0].moe.experts
     ]
     assert sum(expert_grads) >= 2
+
+
+def test_train_loop_can_initialize_from_checkpoint_with_reset_step(tmp_path):
+    config = {
+        "model": {
+            "vocab_size": 64,
+            "block_size": 8,
+            "n_layer": 1,
+            "n_head": 2,
+            "n_embd": 16,
+            "dropout": 0.0,
+            "n_expert": 2,
+            "n_expert_active": 1,
+            "expert_hidden_mult": 2,
+            "moe_aux_loss_coef": 0.01,
+        },
+        "train": {
+            "batch_size": 2,
+            "grad_accum_steps": 1,
+            "learning_rate": 0.001,
+            "weight_decay": 0.0,
+            "warmup_steps": 1,
+            "max_steps": 1,
+            "eval_interval": 1,
+            "save_interval": 1,
+            "eval_iters": 1,
+            "val_fraction": 0.25,
+            "mixed_precision": False,
+            "grad_clip": 1.0,
+        },
+    }
+    model = GPT(GPTConfig(**config["model"]))
+    optimizer = make_optimizer(model, 0.001, 0.0)
+    source_ckpt = tmp_path / "source.pt"
+    save_checkpoint(model, optimizer, step=10, config=config, path=str(source_ckpt))
+    blocks = torch.randint(0, 64, (4, 9), dtype=torch.long)
+    dataset = [(row[:-1], row[1:]) for row in blocks]
+
+    last = train_loop(
+        config=config,
+        dataset=dataset,
+        output_dir=str(tmp_path / "out"),
+        model_factory=lambda: GPT(GPTConfig(**config["model"])),
+        resume_checkpoint=str(source_ckpt),
+        reset_step=True,
+        reset_optimizer=True,
+    )
+
+    saved = torch.load(last, map_location="cpu")
+    assert saved["step"] == 1

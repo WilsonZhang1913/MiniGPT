@@ -89,6 +89,8 @@ def train_loop(
     output_dir: str,
     model_factory: Callable[[], GPT],
     resume_checkpoint: str | None = None,
+    reset_step: bool = False,
+    reset_optimizer: bool = False,
 ) -> str:
     train_cfg = config["train"]
     device = device_for_training()
@@ -100,6 +102,10 @@ def train_loop(
 
     if resume_checkpoint:
         model, optimizer_state, start_step, _ = load_checkpoint(resume_checkpoint, device)
+        if reset_step:
+            start_step = 0
+        if reset_optimizer:
+            optimizer_state = {}
     else:
         model = model_factory().to(device)
         optimizer_state = {}

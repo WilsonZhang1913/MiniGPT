@@ -23,10 +23,11 @@ def main() -> None:
         output_dir=output_dir,
         model_factory=lambda: build_model(cfg["model"]),
         resume_checkpoint=args.checkpoint,
+        reset_step=True,
+        reset_optimizer=True,
     )
     print(f"saved final checkpoint to {last}")
 
 
 if __name__ == "__main__":
     main()
-
