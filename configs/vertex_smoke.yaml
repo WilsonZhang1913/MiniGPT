@@ -1,0 +1,35 @@
+tokenizer: gpt2
+
+model:
+  vocab_size: 50257
+  block_size: 64
+  n_layer: 2
+  n_head: 2
+  n_embd: 128
+  dropout: 0.1
+  n_expert: 4
+  n_expert_active: 2
+  expert_hidden_mult: 4
+  moe_aux_loss_coef: 0.01
+
+data:
+  dataset_name:
+  split: train
+  block_size: 64
+  min_chars: 8
+  limit: 128
+
+train:
+  output_dir: gs://minigpt-wzhang-2026/checkpoints/vertex-smoke
+  batch_size: 2
+  grad_accum_steps: 1
+  learning_rate: 0.0005
+  weight_decay: 0.1
+  warmup_steps: 2
+  max_steps: 3
+  eval_interval: 1
+  save_interval: 1
+  eval_iters: 1
+  val_fraction: 0.25
+  mixed_precision: false
+  grad_clip: 1.0
