@@ -34,10 +34,14 @@ def main() -> None:
     model.eval()
     for prompt in read_prompts(args.prompts):
         idx = torch.tensor([tokenizer.encode(prompt)], dtype=torch.long, device=device)
-        out = model.generate(idx, args.max_new_tokens)
-        print(json.dumps({"prompt": prompt, "completion": tokenizer.decode(out[0].tolist())}, ensure_ascii=False))
+        out = model.generate(idx, args.max_new_tokens, eos_token_id=tokenizer.eos_token_id)
+        print(
+            json.dumps(
+                {"prompt": prompt, "completion": tokenizer.decode(out[0].tolist(), skip_special_tokens=True)},
+                ensure_ascii=False,
+            )
+        )
 
 
 if __name__ == "__main__":
     main()
-

@@ -23,6 +23,21 @@ def test_generate_extends_sequence():
     assert y.shape == (1, 7)
 
 
+def test_generate_stops_at_eos():
+    config = GPTConfig(vocab_size=8, block_size=8, n_layer=1, n_head=2, n_embd=16, dropout=0.0)
+    model = GPT(config)
+
+    def fake_forward(idx, targets=None):
+        logits = torch.full((idx.size(0), idx.size(1), config.vocab_size), -1000.0)
+        logits[:, -1, 3] = 1000.0
+        return logits, None
+
+    model.forward = fake_forward
+    x = torch.tensor([[1, 2]])
+    y = model.generate(x, max_new_tokens=5, eos_token_id=3)
+    assert y.tolist() == [[1, 2, 3]]
+
+
 def test_moe_routes_to_multiple_experts():
     config = GPTConfig(
         vocab_size=128,

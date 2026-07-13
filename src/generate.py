@@ -23,10 +23,15 @@ def main() -> None:
     model, _, _, _ = load_checkpoint(args.checkpoint, device)
     model.eval()
     idx = torch.tensor([tokenizer.encode(args.prompt)], dtype=torch.long, device=device)
-    out = model.generate(idx, args.max_new_tokens, args.temperature, args.top_k)
-    print(tokenizer.decode(out[0].tolist()))
+    out = model.generate(
+        idx,
+        args.max_new_tokens,
+        args.temperature,
+        args.top_k,
+        eos_token_id=tokenizer.eos_token_id,
+    )
+    print(tokenizer.decode(out[0].tolist(), skip_special_tokens=True))
 
 
 if __name__ == "__main__":
     main()
-
