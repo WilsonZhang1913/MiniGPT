@@ -20,6 +20,18 @@ class GPTConfig:
     n_expert_active: int = 2
     expert_hidden_mult: int = 4
     moe_aux_loss_coef: float = 0.01
+    position_embedding_type: str = "learned"
+    rope_theta: float = 10000.0
+
+
+def apply_rotary_pos_emb(x: torch.Tensor, positions: torch.Tensor, inv_freq: torch.Tensor) -> torch.Tensor:
+    freqs = torch.outer(positions.to(dtype=inv_freq.dtype), inv_freq)
+    cos = freqs.cos().to(dtype=x.dtype).view(1, 1, positions.numel(), -1)
+    sin = freqs.sin().to(dtype=x.dtype).view(1, 1, positions.numel(), -1)
+    x_even = x[..., 0::2]
+    x_odd = x[..., 1::2]
+    rotated = torch.stack((x_even * cos - x_odd * sin, x_even * sin + x_odd * cos), dim=-1)
+    return rotated.flatten(-2)
 
 
 class CausalSelfAttention(nn.Module):
@@ -27,14 +39,24 @@ class CausalSelfAttention(nn.Module):
         super().__init__()
         if config.n_embd % config.n_head != 0:
             raise ValueError("n_embd must be divisible by n_head")
+        if config.position_embedding_type not in {"learned", "rope"}:
+            raise ValueError("position_embedding_type must be 'learned' or 'rope'")
         self.n_head = config.n_head
         self.head_dim = config.n_embd // config.n_head
+        self.position_embedding_type = config.position_embedding_type
         self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd)
         self.c_proj = nn.Linear(config.n_embd, config.n_embd)
         self.attn_dropout = nn.Dropout(config.dropout)
         self.resid_dropout = nn.Dropout(config.dropout)
         mask = torch.tril(torch.ones(config.block_size, config.block_size))
         self.register_buffer("bias", mask.view(1, 1, config.block_size, config.block_size))
+        if config.position_embedding_type == "rope":
+            if self.head_dim % 2 != 0:
+                raise ValueError("RoPE requires an even attention head dimension")
+            inv_freq = 1.0 / (
+                config.rope_theta ** (torch.arange(0, self.head_dim, 2, dtype=torch.float32) / self.head_dim)
+            )
+            self.register_buffer("rope_inv_freq", inv_freq, persistent=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         batch, seq_len, channels = x.size()
@@ -42,6 +64,10 @@ class CausalSelfAttention(nn.Module):
         q = q.view(batch, seq_len, self.n_head, self.head_dim).transpose(1, 2)
         k = k.view(batch, seq_len, self.n_head, self.head_dim).transpose(1, 2)
         v = v.view(batch, seq_len, self.n_head, self.head_dim).transpose(1, 2)
+        if self.position_embedding_type == "rope":
+            positions = torch.arange(seq_len, device=x.device)
+            q = apply_rotary_pos_emb(q, positions, self.rope_inv_freq)
+            k = apply_rotary_pos_emb(k, positions, self.rope_inv_freq)
 
         att = (q @ k.transpose(-2, -1)) * (1.0 / (self.head_dim**0.5))
         att = att.masked_fill(self.bias[:, :, :seq_len, :seq_len] == 0, float("-inf"))
@@ -121,16 +147,18 @@ class Block(nn.Module):
 class GPT(nn.Module):
     def __init__(self, config: GPTConfig) -> None:
         super().__init__()
+        if config.position_embedding_type not in {"learned", "rope"}:
+            raise ValueError("position_embedding_type must be 'learned' or 'rope'")
         self.config = config
-        self.transformer = nn.ModuleDict(
-            {
-                "wte": nn.Embedding(config.vocab_size, config.n_embd),
-                "wpe": nn.Embedding(config.block_size, config.n_embd),
-                "drop": nn.Dropout(config.dropout),
-                "h": nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
-                "ln_f": nn.LayerNorm(config.n_embd),
-            }
-        )
+        transformer_modules = {
+            "wte": nn.Embedding(config.vocab_size, config.n_embd),
+            "drop": nn.Dropout(config.dropout),
+            "h": nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
+            "ln_f": nn.LayerNorm(config.n_embd),
+        }
+        if config.position_embedding_type == "learned":
+            transformer_modules["wpe"] = nn.Embedding(config.block_size, config.n_embd)
+        self.transformer = nn.ModuleDict(transformer_modules)
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
         self.transformer["wte"].weight = self.lm_head.weight
         self.apply(self._init_weights)
@@ -153,8 +181,11 @@ class GPT(nn.Module):
             raise ValueError(f"Sequence length {seq_len} exceeds block size {self.config.block_size}")
         pos = torch.arange(0, seq_len, dtype=torch.long, device=idx.device).unsqueeze(0)
         tok_emb = self.transformer["wte"](idx)
-        pos_emb = self.transformer["wpe"](pos)
-        x = self.transformer["drop"](tok_emb + pos_emb)
+        if self.config.position_embedding_type == "learned":
+            pos_emb = self.transformer["wpe"](pos)
+            x = self.transformer["drop"](tok_emb + pos_emb)
+        else:
+            x = self.transformer["drop"](tok_emb)
         aux_loss = torch.zeros((), device=idx.device)
         for block in self.transformer["h"]:
             x, block_aux_loss = block(x)

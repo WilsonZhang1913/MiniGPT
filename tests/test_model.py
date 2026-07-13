@@ -1,6 +1,6 @@
 import torch
 
-from src.model import GPT, GPTConfig
+from src.model import GPT, GPTConfig, apply_rotary_pos_emb
 from src.train_utils import make_optimizer, save_checkpoint, set_seed, train_loop
 
 
@@ -13,6 +13,58 @@ def test_model_forward_backward():
     assert logits.shape == (2, config.block_size, config.vocab_size)
     assert loss is not None
     loss.backward()
+
+
+def test_rope_model_forward_backward():
+    config = GPTConfig(
+        vocab_size=128,
+        block_size=16,
+        n_layer=2,
+        n_head=2,
+        n_embd=32,
+        dropout=0.0,
+        position_embedding_type="rope",
+    )
+    model = GPT(config)
+    assert "wpe" not in model.transformer
+    x = torch.randint(0, config.vocab_size, (2, config.block_size))
+    y = torch.randint(0, config.vocab_size, (2, config.block_size))
+    logits, loss = model(x, y)
+    assert logits.shape == (2, config.block_size, config.vocab_size)
+    assert loss is not None
+    loss.backward()
+
+
+def test_learned_position_embeddings_remain_default():
+    model = GPT(GPTConfig(vocab_size=64, block_size=8, n_layer=1, n_head=2, n_embd=16, dropout=0.0))
+    assert model.config.position_embedding_type == "learned"
+    assert "wpe" in model.transformer
+
+
+def test_rope_preserves_query_key_norms():
+    x = torch.randn(2, 3, 5, 8)
+    positions = torch.arange(x.size(2))
+    inv_freq = 1.0 / (10000.0 ** (torch.arange(0, x.size(-1), 2, dtype=torch.float32) / x.size(-1)))
+    rotated = apply_rotary_pos_emb(x, positions, inv_freq)
+    torch.testing.assert_close(rotated.norm(dim=-1), x.norm(dim=-1), atol=1e-6, rtol=1e-6)
+
+
+def test_rope_requires_even_head_dimension():
+    config = GPTConfig(
+        vocab_size=64,
+        block_size=8,
+        n_layer=1,
+        n_head=2,
+        n_embd=18,
+        dropout=0.0,
+        position_embedding_type="rope",
+    )
+    try:
+        GPT(config)
+    except ValueError as exc:
+        assert "even attention head dimension" in str(exc)
+    else:
+        raise AssertionError("expected RoPE with odd head dimension to fail")
 
 
 def test_generate_extends_sequence():

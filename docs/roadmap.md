@@ -12,7 +12,7 @@ This roadmap tracks the repo feedback execution plan. Work should be completed o
 
 1. Completed: Save this roadmap with dense FFN marked deferred and public Hugging Face checkpoint release marked required.
 2. Completed: Implement reproducibility and optimizer grouping.
-3. Implement RoPE positional embeddings.
+3. Completed: Implement RoPE positional embeddings.
 4. Implement PyTorch SDPA attention.
 5. Implement KV-cache decoding.
 6. Implement GQA/MQA support.
