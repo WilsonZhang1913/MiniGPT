@@ -2,16 +2,24 @@ from __future__ import annotations
 
 import math
 import os
+import platform
+import random
+import subprocess
+import sys
 from dataclasses import asdict
+from importlib import metadata
 from pathlib import Path
 from typing import Callable
 
+import numpy as np
 import torch
 from torch.utils.data import DataLoader, random_split
 from tqdm import tqdm
 
 from .io import torch_load, torch_save
 from .model import GPT, GPTConfig
+
+DEFAULT_SEED = 1337
 
 
 def device_for_training() -> torch.device:
@@ -22,16 +30,51 @@ def device_for_training() -> torch.device:
     return torch.device("cpu")
 
 
-def split_dataset(dataset, val_fraction: float = 0.05):
+def get_seed(config: dict | None = None) -> int:
+    if not config:
+        return DEFAULT_SEED
+    if "seed" in config:
+        return int(config["seed"])
+    train_cfg = config.get("train", {})
+    return int(train_cfg.get("seed", DEFAULT_SEED))
+
+
+def set_seed(seed: int = DEFAULT_SEED) -> None:
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    if torch.backends.cudnn.is_available():
+        torch.backends.cudnn.benchmark = False
+        torch.backends.cudnn.deterministic = True
+
+
+def split_dataset(dataset, val_fraction: float = 0.05, seed: int = DEFAULT_SEED):
     val_size = max(1, int(len(dataset) * val_fraction)) if len(dataset) > 1 else 0
     train_size = len(dataset) - val_size
     if val_size == 0:
         return dataset, dataset
-    return random_split(dataset, [train_size, val_size], generator=torch.Generator().manual_seed(1337))
+    return random_split(dataset, [train_size, val_size], generator=torch.Generator().manual_seed(seed))
 
 
 def make_optimizer(model: torch.nn.Module, lr: float, weight_decay: float) -> torch.optim.Optimizer:
-    return torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay, betas=(0.9, 0.95))
+    decay = []
+    no_decay = []
+    for _, parameter in model.named_parameters():
+        if not parameter.requires_grad:
+            continue
+        if parameter.ndim >= 2:
+            decay.append(parameter)
+        else:
+            no_decay.append(parameter)
+    return torch.optim.AdamW(
+        [
+            {"params": decay, "weight_decay": weight_decay},
+            {"params": no_decay, "weight_decay": 0.0},
+        ],
+        lr=lr,
+        betas=(0.9, 0.95),
+    )
 
 
 def learning_rate(step: int, base_lr: float, warmup_steps: int, max_steps: int) -> float:
@@ -56,6 +99,48 @@ def estimate_loss(model: GPT, loader: DataLoader, device: torch.device, eval_ite
     return float(sum(losses) / max(1, len(losses)))
 
 
+def _package_version(package_name: str) -> str | None:
+    try:
+        return metadata.version(package_name)
+    except metadata.PackageNotFoundError:
+        return None
+
+
+def _git_commit() -> str | None:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return result.stdout.strip() or None
+
+
+def reproducibility_metadata(seed: int, device: torch.device) -> dict:
+    cuda_available = torch.cuda.is_available()
+    return {
+        "seed": seed,
+        "git_commit": _git_commit(),
+        "python": sys.version.split()[0],
+        "platform": platform.platform(),
+        "packages": {
+            "torch": str(torch.__version__),
+            "numpy": np.__version__,
+            "transformers": _package_version("transformers"),
+            "datasets": _package_version("datasets"),
+        },
+        "hardware": {
+            "device": str(device),
+            "cuda_available": cuda_available,
+            "cuda_device_name": torch.cuda.get_device_name(0) if cuda_available else None,
+            "cuda_device_count": torch.cuda.device_count() if cuda_available else 0,
+        },
+    }
+
+
 def save_checkpoint(
     model: GPT,
     optimizer: torch.optim.Optimizer,
@@ -70,6 +155,7 @@ def save_checkpoint(
             "step": step,
             "model_config": asdict(model.config),
             "config": config,
+            "reproducibility": reproducibility_metadata(get_seed(config), next(model.parameters()).device),
         },
         path,
     )
@@ -93,11 +179,20 @@ def train_loop(
     reset_optimizer: bool = False,
 ) -> str:
     train_cfg = config["train"]
+    seed = get_seed(config)
+    set_seed(seed)
     device = device_for_training()
-    train_ds, val_ds = split_dataset(dataset, float(train_cfg.get("val_fraction", 0.05)))
+    train_ds, val_ds = split_dataset(dataset, float(train_cfg.get("val_fraction", 0.05)), seed=seed)
     batch_size = int(train_cfg["batch_size"])
     drop_last = len(train_ds) >= batch_size
-    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, drop_last=drop_last)
+    loader_generator = torch.Generator().manual_seed(seed)
+    train_loader = DataLoader(
+        train_ds,
+        batch_size=batch_size,
+        shuffle=True,
+        drop_last=drop_last,
+        generator=loader_generator,
+    )
     val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False)
 
     if resume_checkpoint:

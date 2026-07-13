@@ -7,7 +7,7 @@ from pathlib import Path
 import torch
 
 from .tokenizer import load_tokenizer
-from .train_utils import device_for_training, load_checkpoint
+from .train_utils import DEFAULT_SEED, device_for_training, load_checkpoint, set_seed
 
 
 def read_prompts(path: str) -> list[str]:
@@ -26,8 +26,10 @@ def main() -> None:
     parser.add_argument("--prompts", required=True)
     parser.add_argument("--tokenizer", default="gpt2")
     parser.add_argument("--max-new-tokens", type=int, default=120)
+    parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
     args = parser.parse_args()
 
+    set_seed(args.seed)
     device = device_for_training()
     tokenizer = load_tokenizer(args.tokenizer)
     model, _, _, _ = load_checkpoint(args.checkpoint, device)
