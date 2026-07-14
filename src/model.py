@@ -7,6 +7,8 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
+KVCache = tuple[tuple[torch.Tensor, torch.Tensor], ...]
+
 
 @dataclass
 class GPTConfig:
@@ -58,24 +60,42 @@ class CausalSelfAttention(nn.Module):
             )
             self.register_buffer("rope_inv_freq", inv_freq, persistent=False)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        x: torch.Tensor,
+        past_key_value: Optional[tuple[torch.Tensor, torch.Tensor]] = None,
+        use_cache: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
         batch, seq_len, channels = x.size()
+        past_len = past_key_value[0].size(-2) if past_key_value is not None else 0
+        total_len = past_len + seq_len
+        if total_len > self.bias.size(-1):
+            raise ValueError(f"Cached sequence length {total_len} exceeds block size {self.bias.size(-1)}")
         q, k, v = self.c_attn(x).split(channels, dim=2)
         q = q.view(batch, seq_len, self.n_head, self.head_dim).transpose(1, 2)
         k = k.view(batch, seq_len, self.n_head, self.head_dim).transpose(1, 2)
         v = v.view(batch, seq_len, self.n_head, self.head_dim).transpose(1, 2)
         if self.position_embedding_type == "rope":
-            positions = torch.arange(seq_len, device=x.device)
+            positions = torch.arange(past_len, total_len, device=x.device)
             q = apply_rotary_pos_emb(q, positions, self.rope_inv_freq)
             k = apply_rotary_pos_emb(k, positions, self.rope_inv_freq)
+        if past_key_value is not None:
+            past_k, past_v = past_key_value
+            k = torch.cat((past_k, k), dim=-2)
+            v = torch.cat((past_v, v), dim=-2)
+        present_key_value = (k, v) if use_cache else None
 
         att = (q @ k.transpose(-2, -1)) * (1.0 / (self.head_dim**0.5))
-        att = att.masked_fill(self.bias[:, :, :seq_len, :seq_len] == 0, float("-inf"))
+        causal_mask = self.bias[:, :, past_len:total_len, :total_len]
+        att = att.masked_fill(causal_mask == 0, float("-inf"))
         att = F.softmax(att, dim=-1)
         att = self.attn_dropout(att)
         y = att @ v
         y = y.transpose(1, 2).contiguous().view(batch, seq_len, channels)
-        return self.resid_dropout(self.c_proj(y))
+        y = self.resid_dropout(self.c_proj(y))
+        if use_cache:
+            return y, present_key_value
+        return y
 
 
 class Expert(nn.Module):
@@ -137,10 +157,21 @@ class Block(nn.Module):
         self.ln_2 = nn.LayerNorm(config.n_embd)
         self.moe = MixtureOfExperts(config)
 
-    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        x = x + self.attn(self.ln_1(x))
+    def forward(
+        self,
+        x: torch.Tensor,
+        past_key_value: Optional[tuple[torch.Tensor, torch.Tensor]] = None,
+        use_cache: bool = False,
+    ) -> tuple[torch.Tensor, torch.Tensor] | tuple[torch.Tensor, torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
+        attn_out = self.attn(self.ln_1(x), past_key_value=past_key_value, use_cache=use_cache)
+        present_key_value = None
+        if use_cache:
+            attn_out, present_key_value = attn_out
+        x = x + attn_out
         moe_out, aux_loss = self.moe(self.ln_2(x))
         x = x + moe_out
+        if use_cache:
+            return x, aux_loss, present_key_value
         return x, aux_loss
 
 
@@ -175,11 +206,17 @@ class GPT(nn.Module):
         self,
         idx: torch.Tensor,
         targets: Optional[torch.Tensor] = None,
-    ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
+        past_key_values: Optional[KVCache] = None,
+        use_cache: bool = False,
+    ) -> tuple[torch.Tensor, Optional[torch.Tensor]] | tuple[torch.Tensor, Optional[torch.Tensor], KVCache]:
         _, seq_len = idx.size()
-        if seq_len > self.config.block_size:
-            raise ValueError(f"Sequence length {seq_len} exceeds block size {self.config.block_size}")
-        pos = torch.arange(0, seq_len, dtype=torch.long, device=idx.device).unsqueeze(0)
+        past_len = past_key_values[0][0].size(-2) if past_key_values is not None else 0
+        total_len = past_len + seq_len
+        if total_len > self.config.block_size:
+            raise ValueError(f"Sequence length {total_len} exceeds block size {self.config.block_size}")
+        if targets is not None and past_key_values is not None:
+            raise ValueError("targets cannot be provided when past_key_values are used")
+        pos = torch.arange(past_len, total_len, dtype=torch.long, device=idx.device).unsqueeze(0)
         tok_emb = self.transformer["wte"](idx)
         if self.config.position_embedding_type == "learned":
             pos_emb = self.transformer["wpe"](pos)
@@ -187,8 +224,16 @@ class GPT(nn.Module):
         else:
             x = self.transformer["drop"](tok_emb)
         aux_loss = torch.zeros((), device=idx.device)
-        for block in self.transformer["h"]:
-            x, block_aux_loss = block(x)
+        present_key_values = []
+        if past_key_values is not None and len(past_key_values) != len(self.transformer["h"]):
+            raise ValueError("past_key_values length must match number of transformer blocks")
+        for i, block in enumerate(self.transformer["h"]):
+            layer_past = past_key_values[i] if past_key_values is not None else None
+            if use_cache:
+                x, block_aux_loss, present_key_value = block(x, past_key_value=layer_past, use_cache=True)
+                present_key_values.append(present_key_value)
+            else:
+                x, block_aux_loss = block(x)
             aux_loss = aux_loss + block_aux_loss
         x = self.transformer["ln_f"](x)
         logits = self.lm_head(x)
@@ -196,6 +241,8 @@ class GPT(nn.Module):
         if targets is not None:
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-100)
             loss = loss + self.config.moe_aux_loss_coef * aux_loss / max(1, self.config.n_layer)
+        if use_cache:
+            return logits, loss, tuple(present_key_values)
         return logits, loss
 
     @torch.no_grad()
@@ -206,10 +253,19 @@ class GPT(nn.Module):
         temperature: float = 0.8,
         top_k: int = 50,
         eos_token_id: Optional[int] = None,
+        use_cache: bool = True,
     ) -> torch.Tensor:
+        past_key_values = None
         for _ in range(max_new_tokens):
             idx_cond = idx[:, -self.config.block_size :]
-            logits, _ = self(idx_cond)
+            if use_cache and past_key_values is not None and past_key_values[0][0].size(-2) >= self.config.block_size:
+                past_key_values = None
+            if use_cache and past_key_values is None:
+                logits, _, past_key_values = self(idx_cond, use_cache=True)
+            elif use_cache:
+                logits, _, past_key_values = self(idx[:, -1:], past_key_values=past_key_values, use_cache=True)
+            else:
+                logits, _ = self(idx_cond)
             logits = logits[:, -1, :] / max(temperature, 1e-6)
             if top_k > 0:
                 values, _ = torch.topk(logits, min(top_k, logits.size(-1)))

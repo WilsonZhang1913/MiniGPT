@@ -14,7 +14,7 @@ This roadmap tracks the repo feedback execution plan. Work should be completed o
 2. Completed: Implement reproducibility and optimizer grouping.
 3. Completed: Implement RoPE positional embeddings.
 4. Implement PyTorch SDPA attention.
-5. Implement KV-cache decoding.
+5. Completed: Implement KV-cache decoding.
 6. Implement GQA/MQA support.
 7. Fix pretraining split and padded-block handling.
 8. Add structured training logs and metric evaluation.

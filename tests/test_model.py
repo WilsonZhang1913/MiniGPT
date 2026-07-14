@@ -67,6 +67,55 @@ def test_rope_requires_even_head_dimension():
         raise AssertionError("expected RoPE with odd head dimension to fail")
 
 
+def _assert_cached_logits_match_full_forward(position_embedding_type: str):
+    config = GPTConfig(
+        vocab_size=64,
+        block_size=8,
+        n_layer=2,
+        n_head=2,
+        n_embd=16,
+        dropout=0.0,
+        n_expert=2,
+        n_expert_active=1,
+        position_embedding_type=position_embedding_type,
+    )
+    set_seed(123)
+    model = GPT(config)
+    model.eval()
+    idx = torch.randint(0, config.vocab_size, (2, config.block_size))
+
+    full_logits, _ = model(idx)
+    cached_logits = []
+    past_key_values = None
+    for pos in range(idx.size(1)):
+        logits, _, past_key_values = model(idx[:, pos : pos + 1], past_key_values=past_key_values, use_cache=True)
+        cached_logits.append(logits)
+
+    torch.testing.assert_close(torch.cat(cached_logits, dim=1), full_logits, atol=1e-5, rtol=1e-5)
+
+
+def test_cached_decoding_matches_full_forward_with_learned_positions():
+    _assert_cached_logits_match_full_forward("learned")
+
+
+def test_cached_decoding_matches_full_forward_with_rope():
+    _assert_cached_logits_match_full_forward("rope")
+
+
+def test_kv_cache_shapes():
+    config = GPTConfig(vocab_size=64, block_size=8, n_layer=2, n_head=2, n_embd=16, dropout=0.0)
+    model = GPT(config)
+    idx = torch.randint(0, config.vocab_size, (3, 5))
+    logits, loss, past_key_values = model(idx, use_cache=True)
+
+    assert logits.shape == (3, 5, config.vocab_size)
+    assert loss is None
+    assert len(past_key_values) == config.n_layer
+    for key, value in past_key_values:
+        assert key.shape == (3, config.n_head, 5, config.n_embd // config.n_head)
+        assert value.shape == key.shape
+
+
 def test_generate_extends_sequence():
     config = GPTConfig(vocab_size=64, block_size=8, n_layer=1, n_head=2, n_embd=16, dropout=0.0)
     model = GPT(config)
@@ -86,7 +135,7 @@ def test_generate_stops_at_eos():
 
     model.forward = fake_forward
     x = torch.tensor([[1, 2]])
-    y = model.generate(x, max_new_tokens=5, eos_token_id=3)
+    y = model.generate(x, max_new_tokens=5, eos_token_id=3, use_cache=False)
     assert y.tolist() == [[1, 2, 3]]
 
 
